@@ -33,8 +33,7 @@ def speculative_sampling(prefix : torch.Tensor, approx_model : torch.nn.Module, 
     T = seq_len + max_len
     
     assert prefix.shape[0] == 1, "input batch size must be 1"
-
-    assert approx_model.device == target_model.device
+    # assert approx_model.device == target_model.device
     
     device = target_model.device
     
