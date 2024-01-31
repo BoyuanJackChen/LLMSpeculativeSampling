@@ -24,6 +24,9 @@ MODELZOO = {
     "bloom7b": "bigscience/bloomz-7b1",
     "baichuan-7b": "/share_nfs/duanqiyuan/models/source_models/hf/baichuan-7B",
     "baichuan-13b": "/share_nfs/duanqiyuan/models/source_models/hf/Baichuan-13B-Base",
+    "wizardcoder-7b": "WizardLM/WizardCoder-Python-7B-V1.0",
+    "wizardcoder-13b": "WizardLM/WizardCoder-Python-13B-V1.0",
+    "wizardcoder-34b": "WizardLM/WizardCoder-Python-34B-V1.0", 
 }
 
 def parse_arguments():
