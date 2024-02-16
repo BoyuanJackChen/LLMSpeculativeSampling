@@ -27,18 +27,21 @@ MODELZOO = {
     "wizardcoder-7b": "WizardLM/WizardCoder-Python-7B-V1.0",
     "wizardcoder-13b": "WizardLM/WizardCoder-Python-13B-V1.0",
     "wizardcoder-34b": "WizardLM/WizardCoder-Python-34B-V1.0", 
+    "starcoder-1b": "WizardLM/WizardCoder-1B-V1.0",
+    "starcoder-3b": "WizardLM/WizardCoder-3B-V1.0",
+    "starcoder-15b": "WizardLM/WizardCoder-15B-V1.0",
 }
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description='args for main.py')
-    parser.add_argument('--input', type=str, default="Any recommendations for my holidays in Abu Dhabi?")
-    parser.add_argument('--approx_model_name', type=str, default=MODELZOO["bloom-560m"])
-    parser.add_argument('--target_model_name', type=str, default=MODELZOO["bloom7b"])
+    parser.add_argument('--input', type=str, default="from typing import List\n\n\ndef intersperse(numbers: List[int], delimeter: int) -> List[int]:\n    \"\"\" Insert a number 'delimeter' between every two consecutive elements of input list `numbers'\n    >>> intersperse([], 4)\n    []\n    >>> intersperse([1, 2, 3], 4)\n    [1, 4, 2, 4, 3]\n    \"\"\"\n")
+    parser.add_argument('--approx_model_name', type=str, default=MODELZOO["starcoder-1b"])
+    parser.add_argument('--target_model_name', type=str, default=MODELZOO["starcoder-15b"])
     parser.add_argument('--verbose', '-v', action='store_true', default=True, help='enable verbose mode')
     parser.add_argument('--seed', '-s', type=int, default=None, help='set a random seed, which can makes the result reproducible')
     parser.add_argument('--benchmark', '-b', action='store_true', default=False, help='show benchmark results.')
     parser.add_argument('--profiling', '-p', action='store_true', default=False, help='collect torch profiler results.')
-    parser.add_argument('--max_tokens', '-M', type=int, default=20, help='max token number generated.')
+    parser.add_argument('--max_tokens', '-M', type=int, default=50, help='max token number generated.')
     parser.add_argument('--gamma', '-g', type=int, default=4, help='guess time.')
     args = parser.parse_args()
     return args
@@ -104,7 +107,8 @@ def generate(input_text, approx_model_name, target_model_name, num_tokens=20, ga
         num_tokens, 
         top_k=top_k, 
         top_p=top_p, 
-        random_seed=random_seed
+        random_seed=random_seed,
+        temperature=0.1
     )
     generated_text = tokenizer.decode(output[0], skip_special_tokens=True)
     color_print(f"deepmind's speculative_sampling: {generated_text}")  
@@ -136,6 +140,7 @@ def generate(input_text, approx_model_name, target_model_name, num_tokens=20, ga
     print(f"Generating with draft model...")
     start = time.time()
     torch.manual_seed(123)
+    input_ids = input_ids.to(small_model.device)
     output = autoregressive_sampling(
         input_ids,
         small_model,
@@ -176,7 +181,7 @@ if __name__ == "__main__":
         args.input, 
         args.approx_model_name, 
         args.target_model_name, 
-        num_tokens=args.max_tokens, 
+        num_tokens=args.max_tokens,
         gamma=args.gamma,
         random_seed = args.seed, 
         verbose=args.verbose, 

@@ -30,8 +30,8 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description='args for main.py')
 
     parser.add_argument('--input', type=str, default="Any recommendations for my holidays in Abu Dhabi?")
-    parser.add_argument('--approx_model_name', type=str, default=MODELZOO["llama2-7b"])
-    parser.add_argument('--target_model_name', type=str, default=MODELZOO["llama2-70b"])
+    parser.add_argument('--approx_model_name', type=str, default=MODELZOO["llama2-1b"])
+    parser.add_argument('--target_model_name', type=str, default=MODELZOO["llama2-7b"])
     parser.add_argument('--verbose', '-v', action='store_true', default=False, help='enable verbose mode')
     parser.add_argument('--seed', '-s', type=int, default=None, help='set a random seed, which can makes the result reproducible')
     parser.add_argument('--benchmark', '-b', action='store_true', default=False, help='show benchmark results.')

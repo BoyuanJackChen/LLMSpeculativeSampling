@@ -31,11 +31,14 @@ def speculative_sampling(prefix : torch.Tensor, approx_model : torch.nn.Module, 
     """
     seq_len = prefix.shape[1]
     T = seq_len + max_len
-    
+
     assert prefix.shape[0] == 1, "input batch size must be 1"
     # assert approx_model.device == target_model.device
     
-    device = target_model.device
+    # Devices for each model
+    approx_device = approx_model.device
+    target_device = target_model.device
+    prefix = prefix.to(approx_device)
     
     approx_model_cache = KVCacheModel(approx_model, temperature, top_k, top_p)
     target_model_cache = KVCacheModel(target_model, temperature, top_k, top_p)
@@ -47,26 +50,32 @@ def speculative_sampling(prefix : torch.Tensor, approx_model : torch.nn.Module, 
     while prefix.shape[1] < T:
         # q = M_q[prefix + x_0, x_1, .., x_(gamma-2)]
         prefix_len = prefix.shape[1]
-
         x = approx_model_cache.generate(prefix, gamma)
-        _ = target_model_cache.generate(x, 1)
+        
+        # Move generated tokens to target_model device for checking
+        x_target_device = x.to(target_device)
+        _ = target_model_cache.generate(x_target_device, 1)
+        # _ = target_model_cache.generate(x, 1)
         
         n = prefix_len + gamma - 1
         
+        prefix = prefix.to(approx_device)  # Move prefix back to approx_device if it was moved to target_device
 
         for i in range(gamma):
             if random_seed:
                 torch.manual_seed(random_seed)
-            r = torch.rand(1, device = device)
-            j = x[:, prefix_len + i]
+            r = torch.rand(1, device = target_device)
+            # r = torch.rand(1, device = prefix.device)
+            j_approx_device = x[:, prefix_len + i].to(approx_device)
+            j_target_device = x_target_device[:, prefix_len + i]
             
-            if r > (target_model_cache._prob_history[:, prefix_len + i - 1, j]) / (approx_model_cache._prob_history[:, prefix_len + i - 1, j]):
+            if r > (target_model_cache._prob_history[:, prefix_len + i - 1, j_target_device]) / (approx_model_cache._prob_history[:, prefix_len + i - 1, j_approx_device]).to(target_device):
                 # reject
                 n = prefix_len + i - 1
                 break
             
             if verbose:
-                print(f"approx guess accepted {j[0]}: \033[31m{Decoder().decode(torch.tensor([j]))}\033[0m")
+                print(f"approx guess accepted {j_approx_device[0]}: \033[31m{Decoder().decode(torch.tensor([j]))}\033[0m")
 
             accepted_count += 1
         
@@ -80,7 +89,7 @@ def speculative_sampling(prefix : torch.Tensor, approx_model : torch.nn.Module, 
         
         if n < prefix_len + gamma - 1:
             # reject someone, sample from the pos n
-            t = sample(max_fn(target_model_cache._prob_history[:, n, :] - approx_model_cache._prob_history[:, n, :]))
+            t = sample(max_fn(target_model_cache._prob_history[:, n, :] - approx_model_cache._prob_history[:, n, :].to(target_device)))
             if verbose:
                 print(f"target resamples at position {n}: \033[34m{Decoder().decode(t)}\033[0m")
             resample_count += 1
@@ -94,8 +103,7 @@ def speculative_sampling(prefix : torch.Tensor, approx_model : torch.nn.Module, 
             target_sample_count += 1
             target_model_cache.rollback(n+2)
         
-        
-        prefix = torch.cat((prefix, t), dim=1)
+        prefix = torch.cat((prefix, t.to(approx_device)), dim=1)
 
     if verbose:
         print(f"generated tokens numbers {prefix.shape[-1] - seq_len}, accepted_count {accepted_count}, target_sample_count {target_sample_count}, resample_count {resample_count}")
