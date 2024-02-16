@@ -21,7 +21,7 @@ MODELZOO = {
     "llama2-7b" : "/share_nfs/fangjiarui/root/code/hf_models/llama-2-7b-hf",
     "llama2-70b" : "/share_nfs/fangjiarui/root/code/hf_models/llama-2-70b-hf",
     "bloom-560m": "bigscience/bloom-560m",
-    "bloom7b": "bigscience/bloomz-7b1",
+    "bloom-7b": "bigscience/bloomz-7b1",
     "baichuan-7b": "/share_nfs/duanqiyuan/models/source_models/hf/baichuan-7B",
     "baichuan-13b": "/share_nfs/duanqiyuan/models/source_models/hf/Baichuan-13B-Base",
     "wizardcoder-7b": "WizardLM/WizardCoder-Python-7B-V1.0",

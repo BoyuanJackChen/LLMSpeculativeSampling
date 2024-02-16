@@ -1,5 +1,11 @@
 # Fast inference from transformers via speculative decoding
 
+## 程序任务
+这个repository是我fork的，关于speculative decoding。原理大概是，用一个小模型生成若干token，然后用一个大模型检查这些token——如果一样，就用小模型的结果；如果不一样，大模型再生成一次。这样可以提高效率，因为小模型生成+大模型检查的时间，要远低于大模型生成的时间。
+
+现在经过少许更改，已经可以在多个GPU上跑原作提供的模型。直接运行my_main.py就可以。llama、bloom和baichuan系列是原作提供的，都可以跑；后面两组模型是我想用的，但是现在跑不了，有bug。请帮我修改代码，让我的模型组(startcoder-1b, starcoder-15b)也可以跑起来。如果内存不够，可换为1b和3b，原理是一样的。
+
+## Original Document
 This repository implements speculative sampling for large language model (LLM) decoding. It utilizes two models during the decoding process: a target model and an approximation model. The approximation model is a smaller model, while the target model is a larger one. The approximation model generates token guesses, and the target model corrects these guesses. This approach allows for decoding by running the target model in parallel on the outputs of the approximation models, resulting in improved efficiency compared to decoding with the target model alone.
 
 The speculative sampling is proposed by Google and Deepmind independently. So I implement two slightly different versions of speculative sampling: [Google's](https://arxiv.org/abs/2211.17192) and [Deepmind's](https://arxiv.org/abs/2302.01318).
