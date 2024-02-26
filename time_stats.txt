@@ -1,0 +1,5 @@
+
+HumanEval/18:
+Wizard-34B: 32.2
+Wizard-7B: 17.4
+Google spec: (g=4) 19.2

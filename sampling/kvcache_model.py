@@ -24,17 +24,22 @@ class KVCacheModel():
 
     def _forward_with_kvcache(self, input_ids : torch.Tensor, use_debug = True) -> torch.Tensor:
         if self._past_key_values is None:
+            # self._prob_history = None
             assert self._prob_history is None, f"{self._prob_history.shape}"
             # the first forward (prefill) returns the prompt's logits
-            outputs = self._model(input_ids)
+            outputs = self._model(input_ids, output_hidden_states=True, output_attentions=True, use_cache=True)
             self._prob_history = outputs.logits
             for i in range(self._prob_history.shape[-2]):   
                 self._prob_history[:, i, :] = norm_logits(self._prob_history[:, i, :], self._temperature, self._top_k, self._top_p)
             self._past_key_values = outputs.past_key_values
+            # print(f"_past_key_values given at initial, it is {len(self._past_key_values)}, {len(self._past_key_values[0])},"
+            #       f"{self._past_key_values[0][0].shape}")
+            # input()
             last_q = self._prob_history[:, -1, :]
         else:
             # return the last token's logits
             cached_len = 0
+            # print(len(self._past_key_values))
             for kv in self._past_key_values:
                 k, v = kv
                 cached_len = k.shape[2]
@@ -60,6 +65,7 @@ class KVCacheModel():
             
             last_q = not_cached_q[:, -1, :]
             self._past_key_values = outputs.past_key_values
+            # print(f"_past_key_values given at middle, it is {len(self._past_key_values)}, {len(self._past_key_values[0])}, {self._past_key_values[0][0].shape}")
         
         return last_q
 
