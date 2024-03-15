@@ -29,21 +29,20 @@ class KVCacheModel():
             # the first forward (prefill) returns the prompt's logits
             outputs = self._model(input_ids, output_hidden_states=True, output_attentions=True, use_cache=True)
             self._prob_history = outputs.logits
+            
+            # The normalization itself was correct; _prob_history was already bad.
             for i in range(self._prob_history.shape[-2]):   
                 self._prob_history[:, i, :] = norm_logits(self._prob_history[:, i, :], self._temperature, self._top_k, self._top_p)
+
             self._past_key_values = outputs.past_key_values
-            # print(f"_past_key_values given at initial, it is {len(self._past_key_values)}, {len(self._past_key_values[0])},"
-            #       f"{self._past_key_values[0][0].shape}")
-            # input()
             last_q = self._prob_history[:, -1, :]
         else:
             # return the last token's logits
             cached_len = 0
-            # print(len(self._past_key_values))
             for kv in self._past_key_values:
                 k, v = kv
                 cached_len = k.shape[2]
-                
+
             last_input_id = input_ids[:, cached_len:]
             if last_input_id.dim() == 1:
                 last_input_id = torch.unsqueeze(last_input_id, 0)
@@ -57,9 +56,10 @@ class KVCacheModel():
             not_cached_q = outputs.logits
             if not_cached_q.dim() == 2:
                 not_cached_q = torch.unsqueeze(not_cached_q, 0)
-                
+            
+            # not_cached_q has shape [2, 1, 32001]. So far it should be good. First is batch, second is seq_len, third is vocab
             for i in range(not_cached_q.shape[-2]):   
-                not_cached_q[:, i, :] = norm_logits(not_cached_q[:, i, :], self._temperature, self._top_k, self._top_p)    
+                not_cached_q[:, i, :] = norm_logits(not_cached_q[:, i, :], self._temperature, self._top_k, self._top_p)  
                 
             self._prob_history = torch.cat([self._prob_history, not_cached_q], dim=1)
             
@@ -85,7 +85,7 @@ class KVCacheModel():
         x = prefix
 
         for _ in range(gamma):
-            q = self._forward_with_kvcache(x, use_debug)
+            q = self._forward_with_kvcache(x, use_debug)    # This is the bug!!!
             next_tok = sample(q)
             x = torch.cat((x, next_tok), dim=1)
         return x

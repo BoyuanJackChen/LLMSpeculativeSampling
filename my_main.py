@@ -5,8 +5,9 @@ import contexttimer
 from colorama import Fore, Style
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import time
+from datasets import load_dataset
 
-from sampling import autoregressive_sampling, speculative_sampling, speculative_sampling_v2
+from sampling import autoregressive_sampling, speculative_sampling, speculative_sampling_batch, speculative_sampling_v2
 from globals import Decoder
 from human_eval.data import read_problems
 
@@ -53,6 +54,8 @@ def parse_arguments():
     args = parser.parse_args()
     return args
 
+fixed_starter = "Here's the Python script for the given problem:\n\n\n```python\n"
+
 def alpaca_prompt(input):
     INSTRUCTION = f"""Below is an instruction that describes a task. Write a response that appropriately completes the request.
 
@@ -93,8 +96,16 @@ def benchmark(fn, print_prefix, use_profiler=True, *args, **kwargs):
 def generate(input_text, approx_model_name, target_model_name, num_tokens=20, gamma = 4,
              random_seed = None, verbose = False, use_benchmark = False, use_profiling = False,
              stopping_logits = []):
+    # Prepare input
+    # APPS
+    all_dict = load_dataset("codeparrot/apps", split="test")
+    all_question_nums = [4087, 4142, 4148]
+    # # HumanEval
+    # all_dict = read_problems()
+    # all_question_nums = [7, 13, 18, 14, 15]
+    
     # NOTE() approx_model_name and target_model_name should use the same tokenizer!
-    tokenizer = AutoTokenizer.from_pretrained(approx_model_name, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(approx_model_name, trust_remote_code=True, padding_side='left')
     Decoder().set_tokenizer(tokenizer)
     print(f"begin loading models: \n {approx_model_name} \n {target_model_name}")
     small_model = AutoModelForCausalLM.from_pretrained(approx_model_name, 
@@ -115,113 +126,141 @@ def generate(input_text, approx_model_name, target_model_name, num_tokens=20, ga
     large_model.eval()
     print("finish loading models")
     
-    # Prepare input
-    all_dict = read_problems()
-    # 7, 13, 18
-    question_num = 18
-    selected_question = all_dict[f"HumanEval/{question_num}"]
-    input_text = selected_question["prompt"]
-    input_text = alpaca_prompt(input_text)
-    # input_text = args.input
-    input_ids = tokenizer.encode(input_text, return_tensors='pt').to(torch.cuda.current_device())
-    # input_ids = tokenizer.encode(input_text, return_tensors='pt')
-    top_k = 0
-    top_p = 0.95
+    # for question_num in all_question_nums:
+    #     prompt = all_dict[f"HumanEval/{question_num}"]["prompt"]
+    for question in all_dict:
+        number = question["problem_id"]
+        if number not in all_question_nums:
+            continue
+        prompt = question["question"]
+        prompt = prompt.replace('    ', '\t')
+        input_text = [alpaca_prompt(prompt)]
+        input_ids = tokenizer.batch_encode_plus(
+                    input_text, 
+                    return_tensors="pt",
+                    padding=True
+                    # truncation=True,
+                    # max_length=2048
+                ).to(torch.cuda.current_device())['input_ids']
+        top_k = 20
+        top_p = 0.95
+        temperature = 0.01
 
-    temperature = 0.01
 
+        # Target model
+        print(f"Generating with target model...")
+        start = time.time()
+        torch.manual_seed(123)
+        output = autoregressive_sampling(
+            input_ids, 
+            large_model, 
+            num_tokens, 
+            top_k=top_k, 
+            top_p=top_p,
+            temperature=temperature,
+            stopping_logits=stopping_logits
+        )
+        generated_text = tokenizer.decode(output[0], skip_special_tokens=True)
+        generated_text = generated_text[len(input_text[0]):]
+        color_print(f"{generated_text}")
+        if use_benchmark:
+            benchmark(autoregressive_sampling, "AS_large", use_profiling,
+                      input_ids, large_model, num_tokens, top_k = top_k, top_p=top_p)
+        print(f"target model time: {time.time() - start}")
+        torch.cuda.empty_cache()
 
-    # # Target model
-    # print(f"Generating with target model...")
-    # start = time.time()
-    # torch.manual_seed(123)
-    # output = autoregressive_sampling(
-    #     input_ids, 
-    #     large_model, 
-    #     num_tokens, 
-    #     top_k=top_k, 
-    #     top_p=top_p,
-    #     temperature=temperature,
-    #     stopping_logits=stopping_logits
-    # )
-    # generated_text = tokenizer.decode(output[0], skip_special_tokens=True)
-    # generated_text = generated_text[len(input_text):]
-    # color_print(f"{generated_text}")
-    # if use_benchmark:
-    #     benchmark(autoregressive_sampling, "AS_large", use_profiling,
-    #               input_ids, large_model, num_tokens, top_k = top_k, top_p=top_p)
-    # print(f"target model time: {time.time() - start}")
-    # torch.cuda.empty_cache()
+        # # Draft model
+        # print(f"Generating with draft model...")
+        # start = time.time()
+        # torch.manual_seed(123)
+        # input_ids = input_ids.to(small_model.device)
+        # output = autoregressive_sampling(
+        #     input_ids,
+        #     small_model,
+        #     num_tokens,
+        #     top_k=top_k,
+        #     top_p=top_p,
+        #     temperature=temperature,
+        #     stopping_logits=stopping_logits
+        # )
+        # generated_text = tokenizer.decode(output[0], skip_special_tokens=True)    
+        # generated_text = generated_text[len(input_text):]
+        # color_print(f"{generated_text}")
+        # if use_benchmark:
+        #     benchmark(autoregressive_sampling, "AS_small", use_profiling,
+        #               input_ids, small_model, num_tokens, top_k = top_k, top_p=top_p)
+        # print(f"draft model time: {time.time() - start}")
+        
+        # # Batched Google Speculative Decoding
+        # print(f"Generating with google's speculative_sampling...")
+        # start = time.time()
+        # torch.manual_seed(123)
+        # output = speculative_sampling_batch(
+        #     input_ids, 
+        #     small_model, 
+        #     large_model, 
+        #     num_tokens, 
+        #     top_k=top_k, 
+        #     top_p=top_p, 
+        #     gamma=args.gamma,
+        #     random_seed=random_seed,
+        #     temperature=temperature,
+        #     verbose=verbose,
+        #     stopping_logits = stopping_logits,
+        #     eos_token_id = tokenizer.eos_token_id
+        # )
+        # generated_batch = [tokenizer.decode(output[i][len(input_ids[i]):], skip_special_tokens=True) for i in range(len(output))]
+        # for generated_text in generated_batch:
+        #     color_print(f"{generated_text}")
+        # print(f"google's batched speculative_sampling time: {time.time() - start}")
+        # torch.cuda.empty_cache()
 
-    # # Draft model
-    # print(f"Generating with draft model...")
-    # start = time.time()
-    # torch.manual_seed(123)
-    # input_ids = input_ids.to(small_model.device)
-    # output = autoregressive_sampling(
-    #     input_ids,
-    #     small_model,
-    #     num_tokens,
-    #     top_k=top_k,
-    #     top_p=top_p,
-    #     temperature=temperature,
-    #     stopping_logits=stopping_logits
-    # )
-    # generated_text = tokenizer.decode(output[0], skip_special_tokens=True)    
-    # generated_text = generated_text[len(input_text):]
-    # color_print(f"{generated_text}")
-    # if use_benchmark:
-    #     benchmark(autoregressive_sampling, "AS_small", use_profiling,
-    #               input_ids, small_model, num_tokens, top_k = top_k, top_p=top_p)
-    # print(f"draft model time: {time.time() - start}")
-    
-    
+        # # Google Speculative Decoding
+        # print(f"Generating with google's speculative_sampling...")
+        # start = time.time()
+        # torch.manual_seed(123)
+        # output = speculative_sampling(
+        #     input_ids, 
+        #     small_model, 
+        #     large_model, 
+        #     num_tokens, 
+        #     top_k=top_k, 
+        #     top_p=top_p, 
+        #     gamma = args.gamma,
+        #     random_seed=random_seed,
+        #     temperature=temperature,
+        #     verbose=verbose,
+        #     stopping_logits = stopping_logits,
+        #     eos_token_id = tokenizer.eos_token_id
+        # )
+        # generated_text = tokenizer.decode(output[0], skip_special_tokens=True)
+        # generated_text = generated_text[len(input_text):]
+        # color_print(f"{generated_text}")
+        # print(f"google's speculative_sampling time: {time.time() - start}")
+        # torch.cuda.empty_cache()
 
-    # Google Speculative Decoding
-    print(f"Generating with google's speculative_sampling...")
-    start = time.time()
-    torch.manual_seed(123)
-    output = speculative_sampling(
-        input_ids, 
-        small_model, 
-        large_model, 
-        num_tokens, 
-        top_k=top_k, 
-        top_p=top_p, 
-        gamma = args.gamma,
-        random_seed=random_seed,
-        temperature=temperature,
-        verbose=verbose,
-        stopping_logits = stopping_logits
-    )
-    generated_text = tokenizer.decode(output[0], skip_special_tokens=True)
-    generated_text = generated_text[len(input_text):]
-    color_print(f"{generated_text}")
-    print(f"google's speculative_sampling time: {time.time() - start}")
-    torch.cuda.empty_cache()
-
-    # Deepmind Speculative Decoding
-    print(f"Generating with deepmind's speculative_sampling...")
-    start = time.time()
-    torch.manual_seed(123)
-    output = speculative_sampling_v2(
-        input_ids, 
-        small_model, 
-        large_model, 
-        num_tokens, 
-        top_k=top_k, 
-        top_p=top_p, 
-        gamma = args.gamma,
-        random_seed=random_seed,
-        temperature=temperature,
-        verbose=verbose,
-        stopping_logits = stopping_logits
-    )
-    generated_text = tokenizer.decode(output[0], skip_special_tokens=True)
-    generated_text = generated_text[len(input_text):]
-    color_print(f"{generated_text}")
-    print(f"deepmind's speculative_sampling time: {time.time() - start}")
-    torch.cuda.empty_cache()
+        # # Deepmind Speculative Decoding
+        # print(f"Generating with deepmind's speculative_sampling...")
+        # start = time.time()
+        # torch.manual_seed(123)
+        # output = speculative_sampling_v2(
+        #     input_ids, 
+        #     small_model, 
+        #     large_model, 
+        #     num_tokens, 
+        #     top_k=top_k, 
+        #     top_p=top_p, 
+        #     gamma = args.gamma,
+        #     random_seed=random_seed,
+        #     temperature=temperature,
+        #     verbose=verbose,
+        #     stopping_logits = stopping_logits
+        # )
+        # generated_text = tokenizer.decode(output[0], skip_special_tokens=True)
+        # generated_text = generated_text[len(input_text):]
+        # color_print(f"{generated_text}")
+        # print(f"deepmind's speculative_sampling time: {time.time() - start}")
+        # torch.cuda.empty_cache()
 
 
 
@@ -237,7 +276,8 @@ if __name__ == "__main__":
     print(f"args.benchmark: {args.benchmark}")
     stopping_logits = []
     if "Wizard" in args.target_model_name:
-        stopping_logits = [[13,29937], [13,28956,13], [13,28956,30004], [13,30004,13,2158]]
+        stopping_logits = [[13,28956,13], [13,28956,30004], [13,30004,13,2158]]
+        # [13,29937], 
     generate(
         args.input, 
         args.approx_model_name, 

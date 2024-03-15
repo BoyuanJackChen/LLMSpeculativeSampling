@@ -1,5 +1,20 @@
 
 HumanEval/18:
+Full-generation:
 Wizard-34B: 32.2
+Wizard-13B: 
 Wizard-7B: 17.4
-Google spec: (g=4) 19.2
+Google 7-34B: (g=4) 19.2
+Google 7-13B: (g=4) 15.4
+
+Content-only-generation:
+Wizard-34B: 
+Wizard-7B:
+Google 7-34B: 
+Google 7-13B:
+
+
+APPS:
+Wizard-34B: 22.7, 15.7, 14.6
+Wizard-7B: 
+Google 7-34B: (g=4) 17.5, 11.8, 10.5

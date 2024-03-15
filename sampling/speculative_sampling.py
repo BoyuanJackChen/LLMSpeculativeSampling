@@ -41,12 +41,12 @@ def speculative_sampling(prefix : torch.Tensor, approx_model : torch.nn.Module, 
     Returns:
         torch.Tensor: generated tokens (batch, target_seqlen)
     """
-    seq_len = prefix.shape[1]
     stopping_logits = [torch.tensor(x).to(prefix.device) for x in stopping_logits]
+
+    seq_len = prefix.shape[1]    
     T = seq_len + max_len
 
     assert prefix.shape[0] == 1, "input batch size must be 1"
-    # assert approx_model.device == target_model.device
     
     # Devices for each model
     approx_device = approx_model.device
@@ -63,26 +63,25 @@ def speculative_sampling(prefix : torch.Tensor, approx_model : torch.nn.Module, 
     
     while prefix.shape[1] < T:
         # q = M_q[prefix + x_0, x_1, .., x_(gamma-2)]
+        # Let the draft model generate gamma tokens
         prefix_len = prefix.shape[1]
         x_approx_device = approx_model_cache.generate(prefix, gamma)
         
-        # Move generated tokens to target_model device for checking
+        # Move generated tokens to target_model device for checking. Generate 1 token so all possibilities are generated
         x_target_device = x_approx_device.to(target_device)
         _ = target_model_cache.generate(x_target_device, 1)
-        # _ = target_model_cache.generate(x, 1)
         
         n = prefix_len + gamma - 1
 
         for i in range(gamma):
             if random_seed:
                 torch.manual_seed(random_seed)
-            r = torch.rand(1, device = target_device)
-            j_approx_device = x_approx_device[:, prefix_len + i]
-            j_target_device = x_target_device[:, prefix_len + i]
+            r = torch.rand(1, device=target_device)
+            j_approx_device = x_approx_device[:, prefix_len+i]
+            j_target_device = x_target_device[:, prefix_len+i]
             
-            # For each guessed word, accept if target model prob / approx model prob < r. The probability is not normalized
+            # For each guessed word, accept if target model prob / approx model prob < r. The probability is not normalized. If true, then reject.
             if r > (target_model_cache._prob_history[:, prefix_len + i - 1, j_target_device]) / (approx_model_cache._prob_history[:, prefix_len + i - 1, j_approx_device]).to(target_device):
-                # reject
                 n = prefix_len + i - 1
                 break
             
@@ -94,8 +93,6 @@ def speculative_sampling(prefix : torch.Tensor, approx_model : torch.nn.Module, 
         # n is the index of the last accepted token
         assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
         prefix = x_approx_device[:, :n + 1]
-        # print(f"n is: {n}; prefix has length {prefix_len}, is: {prefix[0]}")
-        # print(f"Now calling rollback...")
         approx_model_cache.rollback(n+1)
         assert approx_model_cache._prob_history.shape[-2] <= n + 1, f"approx_model prob list shape {approx_model_cache._prob_history.shape}, n {n}"
         
@@ -115,6 +112,107 @@ def speculative_sampling(prefix : torch.Tensor, approx_model : torch.nn.Module, 
                 print(f"target samples {n}: \033[35m{Decoder().decode(t)}\033[0m")
             target_sample_count += 1
             target_model_cache.rollback(n+2)
+        
+        prefix = torch.cat((prefix, t.to(approx_device)), dim=1)
+        if len(stopping_logits)>0 and check_prefix_ending(prefix, stopping_logits, n-prefix_len+2):
+            break
+
+    if verbose:
+        print(f"generated tokens numbers {prefix.shape[-1] - seq_len}, accepted_count {accepted_count}, target_sample_count {target_sample_count}, resample_count {resample_count}")
+    return prefix
+
+
+# Problem in batch: When one batch is early-halted, the other batch might have VERY SIMILAR predictions, leading to
+# nan sampling. Check google paper and see how they implemented batch.
+@torch.no_grad()
+def speculative_sampling_batch(prefix : torch.Tensor, approx_model : torch.nn.Module, target_model : torch.nn.Module, 
+                         max_len : int , gamma : int = 4,
+                         temperature : float = 1, top_k : int = 0, top_p : float = 0, verbose : bool = False, random_seed : int = None,
+                         stopping_logits : List[int] = [], eos_token_id : int = 0) -> torch.Tensor:
+    """
+    A multi-batch version of the above function
+
+    prefix: Padded to the left, aligned across each prompt.
+    """
+    # print(prefix, type(prefix))
+    # print(f"above is prefix")
+    stopping_logits = [torch.tensor(x).to(prefix.device) for x in stopping_logits]
+
+    seq_len = prefix.shape[1]
+    T = seq_len + max_len
+    
+    # Devices for each model
+    approx_device = approx_model.device
+    target_device = target_model.device
+    prefix = prefix.to(approx_device)
+    # print(f"prefix shape is {prefix.shape}")
+    
+    # We call .generate using these cached models
+    approx_model_cache = KVCacheModel(approx_model, temperature, top_k, top_p)
+    target_model_cache = KVCacheModel(target_model, temperature, top_k, top_p)
+    
+    resample_count = 0
+    target_sample_count = 0
+    accepted_count = 0
+    
+    while prefix.shape[1] < T:
+        # q = M_q[prefix + x_0, x_1, .., x_(gamma-2)]
+        # Let the draft model generate gamma tokens. Multi-batch.
+        prefix_len = prefix.shape[1]
+        x_approx_device = approx_model_cache.generate(prefix, gamma)   # This is already bad
+        
+        # Move generated tokens to target_model device for checking. Generate 1 token so all possibilities are generated
+        x_target_device = x_approx_device.to(target_device)
+        _ = target_model_cache.generate(x_target_device, 1)
+        
+        n = prefix_len + gamma - 1
+
+        # Find the index of the last accepted token (n)
+        for i in range(gamma):
+            if random_seed:
+                torch.manual_seed(random_seed)
+            r = torch.rand(1, device=target_device)
+            j_approx_device = x_approx_device[:, prefix_len+i].unsqueeze(1)   # top i-th token for draft model
+            j_target_device = x_target_device[:, prefix_len+i].unsqueeze(1)
+            
+            # For each guessed word, accept if target model prob / approx model prob < r. The probability is not normalized. If true, then reject.
+            indices_first_dim = torch.arange(j_approx_device.size(0))
+            indices_second_dim = torch.full_like(j_approx_device, prefix_len + i - 1)
+            indices_third_dim_approx = j_approx_device
+            indices_third_dim_target = j_target_device
+            
+            batch_devision = target_model_cache._prob_history[indices_first_dim, indices_second_dim, indices_third_dim_target] / (approx_model_cache._prob_history[indices_first_dim, indices_second_dim, indices_third_dim_approx]).to(target_device)
+            if torch.any(r > batch_devision):
+                n = prefix_len + i - 1
+                break
+            
+            if verbose:
+                print(f"approx guess accepted {j_approx_device[0]}: \033[31m{Decoder().decode(torch.tensor([j_approx_device]))}\033[0m")
+
+            accepted_count += 1
+        
+        # ! prefix here is already bad
+        assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
+        prefix = x_approx_device[:, :n + 1]
+        approx_model_cache.rollback(n+1)   # First rollback
+        assert approx_model_cache._prob_history.shape[-2] <= n + 1, f"approx_model prob list shape {approx_model_cache._prob_history.shape}, n {n}"
+        
+        # Sample the remaining tokens / the 1 last token from target model
+        if n < prefix_len + gamma - 1:
+            t = sample(max_fn(target_model_cache._prob_history[:, n, :] - approx_model_cache._prob_history[:, n, :].to(target_device)))   # !!! This is where the bug is !!! There are all non-positive tensors before max_fn, so after max_fn it is all nan (divide by zero)
+            if verbose:
+                print(f"target resamples at position {n}: \033[34m{Decoder().decode(t)}\033[0m")
+            resample_count += 1
+            target_model_cache.rollback(n+1) # Second rollback - 1
+        else:
+            # all approx model decoding (gamma tokens) accepted
+            assert n == target_model_cache._prob_history.shape[1] - 1
+            t = sample(target_model_cache._prob_history[:, -1, :])
+            # t is the token sampled from the probability distribution, on the last 1 token
+            if verbose:
+                print(f"target samples {n}: \033[35m{Decoder().decode(t)}\033[0m")
+            target_sample_count += 1
+            target_model_cache.rollback(n+2) # Second rollback - 2
         
         prefix = torch.cat((prefix, t.to(approx_device)), dim=1)
         if len(stopping_logits)>0 and check_prefix_ending(prefix, stopping_logits, n-prefix_len+2):
